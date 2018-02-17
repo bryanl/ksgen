@@ -1,6 +1,6 @@
 # ksgen
 
-Generate `k8s.libsonnet` and `k.libsonnet` given a patch to a Kubernetes swagger file.
+Generate `k8s.libsonnet` and `k.libsonnet` given a path to a Kubernetes swagger file.
 
 ```text
 Usage of ksgen:
