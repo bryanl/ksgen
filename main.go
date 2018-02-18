@@ -2,8 +2,12 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"io/ioutil"
+	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 	"runtime/pprof"
 	"runtime/trace"
 
@@ -12,26 +16,56 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const (
+	k8s        = "k8s.libsonnet"
+	k          = "k.libsonnet"
+	defaultURL = "http://localhost:8001/swagger.json"
+)
+
 func main() {
-	urlStr := flag.String("url", "http://localhost:8001/swagger.json", "URL to Kubernetes OpenAPI swagger JSON")
-	pathK8s := flag.String("k8s", "k8s.libsonnet", "path output k8s.libsonnet")
-	pathK := flag.String("k", "k.libsonnet", "path output k.libsonnet")
-	force := flag.Bool("force", false, "force overwrite of existing output")
-	enableTrace := flag.Bool("trace", false, "create trace output")
-	profile := flag.String("profile", "", "create profile output")
+	var urlStr string
+	flag.StringVar(&urlStr, "url", "", "URL to Kubernetes OpenAPI swagger JSON. Mutually exclusive with tag.")
+	var tag string
+	flag.StringVar(&tag, "tag", "", "Kubernetes tag to generate for. Mutually exclusive with url")
+	var outputDir string
+	flag.StringVar(&outputDir, "output", ".", "Directory to generate output")
+	var force bool
+	flag.BoolVar(&force, "force", false, "force overwrite of existing output")
+	var traceFile string
+	flag.StringVar(&traceFile, "trace", "", "create trace output")
+	var profileFile string
+	flag.StringVar(&profileFile, "profile", "", "create profile output")
 	flag.Parse()
 
-	if *urlStr == "" {
-		logrus.Fatal("url is required")
+	var swaggerPath string
+
+	switch {
+	case urlStr == "" && tag == "":
+		swaggerPath = defaultURL
+	case urlStr != "":
+		swaggerPath = urlStr
+	case tag != "":
+		path, err := genFromTag(tag)
+		if err != nil {
+			logrus.WithError(err).WithField("tag", tag).Fatal("fetch swagger from tag")
+		}
+		swaggerPath = path
+		defer os.Remove(swaggerPath)
+	case tag != "" && urlStr != "":
+		logrus.Fatal("can't supply tag with url")
 	}
 
-	if *enableTrace {
-		trace.Start(os.Stdout)
+	if traceFile != "" {
+		f, err := os.Create(traceFile)
+		if err != nil {
+			logrus.WithError(err).Fatal("create trace output")
+		}
+		trace.Start(f)
 		defer trace.Stop()
 	}
 
-	if *profile != "" {
-		f, err := os.Create(*profile)
+	if profileFile != "" {
+		f, err := os.Create(profileFile)
 		if err != nil {
 			logrus.WithError(err).Fatal("create pprof output")
 		}
@@ -39,8 +73,9 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	if *force {
-		for _, path := range []string{*pathK8s, *pathK} {
+	if force {
+		for _, name := range []string{k8s, k} {
+			path := filepath.Join(outputDir, name)
 			logger := logrus.WithField("path", path)
 			b, err := checkFile(path)
 			if err != nil {
@@ -52,15 +87,15 @@ func main() {
 		}
 	}
 
-	k8s, k, err := ksonnet.GenerateLib(*urlStr)
+	outK8s, outK, err := ksonnet.GenerateLib(swaggerPath)
 	if err != nil {
 		logrus.WithError(err).Fatal("generate lib")
 	}
 
-	if err := writeFile(*pathK8s, k8s); err != nil {
+	if err := writeFile(filepath.Join(outputDir, k8s), outK8s); err != nil {
 		logrus.WithError(err).Fatal("write k8s.libsonnet")
 	}
-	if err := writeFile(*pathK, k); err != nil {
+	if err := writeFile(filepath.Join(outputDir, k), outK); err != nil {
 		logrus.WithError(err).Fatal("write k.libsonnet")
 	}
 }
@@ -80,4 +115,39 @@ func checkFile(path string) (bool, error) {
 	}
 
 	return true, nil
+}
+
+func genFromTag(tag string) (string, error) {
+	u := url.URL{
+		Scheme: "https",
+		Host:   "raw.githubusercontent.com",
+		Path:   fmt.Sprintf("/kubernetes/kubernetes/v%s/api/openapi-spec/swagger.json", tag),
+	}
+
+	resp, err := http.DefaultClient.Get(u.String())
+	if err != nil {
+		return "", errors.Wrapf(err, "fetch %s", u.String())
+	}
+
+	defer resp.Body.Close()
+
+	name, err := ioutil.TempFile("", "swagger.json")
+	if err != nil {
+		return "", errors.Wrap(err, "create temp file")
+	}
+
+	b, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", errors.Wrap(err, "read swagger contents")
+	}
+
+	if _, err := name.Write(b); err != nil {
+		return "", errors.Wrap(err, "write swagger contents")
+	}
+
+	if err := name.Close(); err != nil {
+		return "", errors.Wrap(err, "close file")
+	}
+
+	return name.Name(), nil
 }
