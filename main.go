@@ -131,7 +131,7 @@ func genFromTag(tag string) (string, error) {
 
 	defer resp.Body.Close()
 
-	name, err := ioutil.TempFile("", "swagger.json")
+	file, err := ioutil.TempFile("", "swagger.json")
 	if err != nil {
 		return "", errors.Wrap(err, "create temp file")
 	}
@@ -141,13 +141,13 @@ func genFromTag(tag string) (string, error) {
 		return "", errors.Wrap(err, "read swagger contents")
 	}
 
-	if _, err := name.Write(b); err != nil {
+	if _, err := file.Write(b); err != nil {
 		return "", errors.Wrap(err, "write swagger contents")
 	}
 
-	if err := name.Close(); err != nil {
+	if err := file.Close(); err != nil {
 		return "", errors.Wrap(err, "close file")
 	}
 
-	return name.Name(), nil
+	return file.Name(), nil
 }
