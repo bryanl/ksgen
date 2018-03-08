@@ -87,15 +87,15 @@ func main() {
 		}
 	}
 
-	outK8s, outK, err := ksonnet.GenerateLib(swaggerPath)
+	lib, err := ksonnet.GenerateLib(swaggerPath)
 	if err != nil {
 		logrus.WithError(err).Fatal("generate lib")
 	}
 
-	if err := writeFile(filepath.Join(outputDir, k8s), outK8s); err != nil {
+	if err := writeFile(filepath.Join(outputDir, k8s), lib.K8s); err != nil {
 		logrus.WithError(err).Fatal("write k8s.libsonnet")
 	}
-	if err := writeFile(filepath.Join(outputDir, k), outK); err != nil {
+	if err := writeFile(filepath.Join(outputDir, k), lib.Extensions); err != nil {
 		logrus.WithError(err).Fatal("write k.libsonnet")
 	}
 }
