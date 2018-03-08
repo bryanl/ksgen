@@ -27,7 +27,7 @@
 
 [[constraint]]
   name = "github.com/ksonnet/ksonnet-lib"
-  revision = "57bc44a05439889a6279d76310d06913563262c7"
+  revision = "9f27c242ff65da0620f8324cc0cd50c8ef00bf5b"
 
 [[constraint]]
   name = "github.com/pkg/errors"
