@@ -60,7 +60,8 @@
     "ksonnet-gen/nodemaker",
     "ksonnet-gen/printer"
   ]
-  revision = "9f27c242ff65da0620f8324cc0cd50c8ef00bf5b"
+  revision = "8050d6dae568f5171b9ea664344ab6e3811d0d23"
+  version = "v0.1.4"
 
 [[projects]]
   branch = "master"
@@ -136,6 +137,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "b0ff6b103c948b820d45b7658cb7cb91b4f4acaec1460f14ab35ffc010dfa67f"
+  inputs-digest = "aa20f3a00d0d5d6a36a1acbc109e3df90b28319157966f9119843398b81e821e"
   solver-name = "gps-cdcl"
   solver-version = 1

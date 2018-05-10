@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -13,10 +14,12 @@ import (
 )
 
 const (
-	space   = byte(' ')
-	tab     = byte('\t')
-	newline = byte('\n')
-	comma   = byte(',')
+	space       = byte(' ')
+	tab         = byte('\t')
+	newline     = byte('\n')
+	comma       = byte(',')
+	doubleQuote = byte('"')
+	singleQuote = byte('\'')
 
 	syntaxSugar = '+'
 )
@@ -111,6 +114,12 @@ func (p *printer) writeString(s string) {
 	}
 }
 
+func (p *printer) writeStringNoIndent(s string) {
+	for _, b := range []byte(s) {
+		p.output = append(p.output, b)
+	}
+}
+
 // printer prints a node.
 // nolint: gocyclo
 func (p *printer) print(n interface{}) {
@@ -119,66 +128,142 @@ func (p *printer) print(n interface{}) {
 	}
 
 	if n == nil {
-		p.err = errors.New("node is nil")
 		return
 	}
 
 	switch t := n.(type) {
 	default:
-		p.err = errors.Errorf("unknown node type: (%T) %v", n, n)
+		p.err = errors.Errorf("unknown node type: (%T) %#v", n, n)
 		return
 	case *ast.Apply:
 		p.handleApply(t)
 	case ast.Arguments:
 		p.handleArguments(t)
+	case *ast.ApplyBrace:
+		p.print(t.Left)
+		p.writeByte(space, 1)
+		p.print(t.Right)
 	case *ast.Array:
+		oneLine := false
+		if loc := t.NodeBase.Loc(); loc != nil && loc.Begin.Line == loc.End.Line {
+			oneLine = true
+		}
+
 		p.writeString("[")
+		if !oneLine {
+			p.indentLevel++
+			p.writeByte(newline, 1)
+		}
+
 		for i := 0; i < len(t.Elements); i++ {
 			p.print(t.Elements[i])
 
 			if i < len(t.Elements)-1 {
-				p.writeString(",")
+				if oneLine {
+					p.writeString(", ")
+				} else {
+					p.writeString(",")
+					p.writeByte(newline, 1)
+				}
 			}
 		}
+
+		if !oneLine {
+			p.indentLevel--
+			p.writeByte(newline, 1)
+		}
+
 		p.writeString("]")
+	case *ast.ArrayComp:
+		p.handleArrayComp(t)
+	case *ast.Assert:
+		p.writeString("assert ")
+		p.print(t.Cond)
+
+		if t.Message != nil {
+			p.writeString(" : ")
+			p.print(t.Message)
+		}
+
+		p.writeString("; ")
+		p.print(t.Rest)
 	case *ast.Binary:
+		oneLine := true
+		leftLoc := t.Left.Loc()
+		rightLoc := t.Right.Loc()
+
+		if leftLoc != nil && rightLoc != nil {
+			oneLine = leftLoc.End.Line == rightLoc.Begin.Line
+		}
+
 		p.print(t.Left)
 		p.writeByte(space, 1)
 
 		p.writeString(t.Op.String())
-		p.writeByte(space, 1)
+
+		if !oneLine {
+			p.writeByte(newline, 1)
+		} else {
+			p.writeByte(space, 1)
+		}
 
 		p.print(t.Right)
 	case *ast.Conditional:
 		p.handleConditional(t)
+	case *ast.Dollar:
+		p.writeString("$")
+	case *ast.Error:
+		p.writeString("error ")
+		p.print(t.Expr)
 	case *ast.Function:
+		p.writeString("function")
 		p.addMethodSignature(t)
+		p.writeString(" ")
+		p.print(t.Body)
+	case ast.IfSpec:
+		p.writeString("if ")
+		p.print(t.Expr)
 	case *ast.Import:
 		p.writeString("import ")
 		p.print(t.File)
+	case *ast.ImportStr:
+		p.writeString("importstr ")
+		p.print(t.File)
 	case *ast.Index:
 		p.handleIndex(t)
+	case *ast.InSuper:
+		p.print(t.Index)
+		p.writeString(" in super")
 	case *ast.Local:
 		p.handleLocal(t)
 	case *ast.Object:
 		p.writeString("{")
 
-		for _, field := range t.Fields {
-			if !p.inFunction {
+		for i, field := range t.Fields {
+			if !p.isObjectSingleLine(t) {
 				p.indentLevel++
 				p.writeByte(newline, 1)
 			}
 
 			p.print(field)
+			if i < len(t.Fields)-1 {
+				if p.isObjectSingleLine(t) {
+					p.writeByte(comma, 1)
+					p.writeByte(space, 1)
+				}
+			}
 
-			if !p.inFunction {
+			if !p.isObjectSingleLine(t) {
 				p.indentLevel--
-				p.writeByte(comma, 1)
+
+				if l := len(t.Fields); i != l-1 && l > 1 {
+					p.writeByte(comma, 1)
+				}
 			}
 		}
 
 		// write an extra newline at the end
-		if !p.inFunction {
+		if !p.isObjectSingleLine(t) {
 			p.writeByte(newline, 1)
 		}
 
@@ -187,31 +272,32 @@ func (p *printer) print(n interface{}) {
 		p.writeString("{")
 
 		for i, field := range t.Fields {
-			if !t.Oneline && !p.inFunction {
+			if !p.isObjectSingleLine(t) {
 				p.indentLevel++
 				p.writeByte(newline, 1)
 			}
 
 			p.print(field)
 			if i < len(t.Fields)-1 {
-				if t.Oneline {
+				if !p.isObjectSingleLine(t) {
 					p.writeByte(comma, 1)
 					p.writeByte(space, 1)
 				}
 			}
 
-			if !t.Oneline && !p.inFunction {
+			if !p.isObjectSingleLine(t) {
 				p.indentLevel--
-				p.writeByte(comma, 1)
 			}
 		}
 
 		// write an extra newline at the end
-		if !t.Oneline && !p.inFunction {
+		if !p.isObjectSingleLine(t) {
 			p.writeByte(newline, 1)
 		}
 
 		p.writeString("}")
+	case *ast.ObjectComp:
+		p.handleObjectComp(t)
 	case astext.ObjectField, ast.ObjectField:
 		p.handleObjectField(t)
 	case *ast.LiteralBoolean:
@@ -225,18 +311,60 @@ func (p *printer) print(n interface{}) {
 		default:
 			p.err = errors.Errorf("unknown string literal kind %#v", t.Kind)
 			return
-		case ast.StringDouble:
-			p.writeString(strconv.Quote(t.Value))
 		case ast.StringSingle:
 			p.writeString(fmt.Sprintf("'%s'", t.Value))
+		case ast.StringDouble:
+			p.writeString(strconv.Quote(t.Value))
+		case ast.StringBlock:
+			p.writeString("|||")
+			p.writeByte(newline, 1)
+			p.writeString(t.Value)
+			p.writeStringNoIndent("\n|||")
+		case ast.VerbatimStringDouble:
+			p.writeString("@")
+			p.writeByte(doubleQuote, 1)
+			p.writeString(t.Value)
+			p.writeByte(doubleQuote, 1)
+		case ast.VerbatimStringSingle:
+			p.writeString("@")
+			p.writeByte(singleQuote, 1)
+			p.writeString(t.Value)
+			p.writeByte(singleQuote, 1)
 		}
 
 	case *ast.LiteralNumber:
 		p.writeString(t.OriginalString)
+	case *ast.Parens:
+		p.writeString("(")
+		p.print(t.Inner)
+		p.writeString(")")
 	case *ast.Self:
 		p.writeString("self")
+	case *ast.Slice:
+		p.print(t.Target)
+		p.writeString("[")
+		if t.BeginIndex != nil {
+			p.print(t.BeginIndex)
+		}
+		p.writeString(":")
+		if t.EndIndex != nil {
+			p.print(t.EndIndex)
+		}
+		if t.Step != nil {
+			p.writeString(":")
+			p.print(t.Step)
+		}
+		p.writeString("]")
+	case *ast.Unary:
+		p.writeString(t.Op.String())
+		p.print(t.Expr)
 	case *ast.Var:
 		p.writeString(string(t.Id))
+	case *ast.LiteralNull:
+		p.writeString("null")
+	case *ast.SuperIndex:
+		p.writeString("super.")
+		p.writeString(string(*t.Id))
 	}
 }
 
@@ -249,19 +377,42 @@ func (p *printer) handleApply(a *ast.Apply) {
 		p.writeString(")")
 		p.writeByte(space, 1)
 		p.print(a.Target)
-	case *ast.Apply, *ast.Index, *ast.Self, *ast.Var:
+		if a.TailStrict {
+			p.writeString(" tailstrict")
+		}
+	case *ast.Apply, *ast.Index, *ast.Self, *ast.Var, *ast.Parens:
 		p.print(a.Target)
 		p.writeString("(")
 		p.print(a.Arguments)
 		p.writeString(")")
+		if a.TailStrict {
+			p.writeString(" tailstrict")
+		}
 	}
 }
 
 func (p *printer) handleArguments(a ast.Arguments) {
-	// NOTE: only supporting positional arguments
+	argCount := 0
+
 	for i, arg := range a.Positional {
+		argCount++
 		p.print(arg)
 		if i < len(a.Positional)-1 {
+			p.writeByte(comma, 1)
+			p.writeByte(space, 1)
+		}
+	}
+
+	if argCount > 0 && len(a.Named) > 0 {
+		p.writeByte(comma, 1)
+		p.writeByte(space, 1)
+	}
+
+	for i, named := range a.Named {
+		p.writeString(string(named.Name))
+		p.writeString("=")
+		p.print(named.Arg)
+		if i < len(a.Named)-1 {
 			p.writeByte(comma, 1)
 			p.writeByte(space, 1)
 		}
@@ -302,63 +453,88 @@ func (p *printer) handleIndex(i *ast.Index) {
 		p.err = errors.New("index is nil")
 		return
 	}
+
 	p.print(i.Target)
-	p.writeString(".")
-
-	id, err := indexID(i)
-	if err != nil {
-		p.err = err
-		return
-	}
-	p.writeString(id)
-
+	p.indexID(i)
 }
 
 func (p *printer) handleLocal(l *ast.Local) {
 	p.writeString("local ")
 
-	for _, bind := range l.Binds {
+	for i, bind := range l.Binds {
 		p.writeString(string(bind.Variable))
-		switch bodyType := bind.Body.(type) {
+		p.addMethodSignature(bind.Fun)
+
+		switch t := bind.Body.(type) {
 		default:
 			p.writeString(" = ")
 			p.print(bind.Body)
-			p.writeString(";")
 		case *ast.Function:
-			p.print(bind.Body)
-			p.handleLocalFunction(bodyType)
-		}
-		c := 1
-		if _, ok := l.Body.(*ast.Local); !ok {
-			c = 2
-		}
-		p.writeByte(newline, c)
+			p.addMethodSignature(t)
+			p.writeString(" =")
 
+			switch t.Body.(type) {
+			default:
+				p.writeString(" ")
+				p.print(t.Body)
+			case *ast.Local:
+				p.indentLevel++
+				p.writeByte(newline, 1)
+				p.print(t.Body)
+				p.indentLevel--
+			}
+		}
+
+		if l := len(l.Binds); l > 1 {
+			if i < l-1 {
+				p.writeString(", ")
+			}
+		}
 	}
+
+	c := 1
+	if _, ok := l.Body.(*ast.Local); !ok {
+		c = 2
+	}
+	p.writeString(";")
+	p.writeByte(newline, c)
 
 	p.print(l.Body)
 }
 
 func (p *printer) handleLocalFunction(f *ast.Function) {
+	p.addMethodSignature(f)
 	p.writeString(" =")
 	switch f.Body.(type) {
 	default:
 		p.writeByte(space, 1)
 		p.print(f.Body)
-		p.writeString(";")
 	case *ast.Local:
 		p.indentLevel++
 		p.writeByte(newline, 1)
 		p.print(f.Body)
-		p.writeString(";")
 		p.indentLevel--
 	}
 }
 
-func fieldID(expr1 ast.Node, id *ast.Identifier) string {
+func fieldID(kind ast.ObjectFieldKind, expr1 ast.Node, id *ast.Identifier) string {
 	if expr1 != nil {
-		ls := expr1.(*ast.LiteralString)
-		return fmt.Sprintf(`"%s"`, ls.Value)
+		switch t := expr1.(type) {
+		case *ast.LiteralString:
+			var qt string
+			if t.Kind == ast.StringDouble {
+				qt = `"`
+			} else if t.Kind == ast.StringSingle {
+				qt = `'`
+			} else {
+				panic(`only able to handle to handle single and double quoted strings`)
+			}
+			return fmt.Sprintf(`%s%s%s`, qt, t.Value, qt)
+		case *ast.Var:
+			return string(t.Id)
+		default:
+			panic(fmt.Sprintf("unknown Expr1 type %T", t))
+		}
 	}
 
 	if id != nil {
@@ -368,6 +544,37 @@ func fieldID(expr1 ast.Node, id *ast.Identifier) string {
 	return ""
 }
 
+func (p *printer) handleObjectComp(oc *ast.ObjectComp) {
+	p.handleObjectField(oc)
+}
+
+func (p *printer) handleArrayComp(ac *ast.ArrayComp) {
+	p.writeString("[")
+	p.indentLevel++
+	p.writeByte(newline, 1)
+	p.print(ac.Body)
+	p.writeByte(newline, 1)
+	p.forSpec(ac.Spec)
+	p.indentLevel--
+	p.writeByte(newline, 1)
+	p.writeString("]")
+}
+
+func (p *printer) forSpec(spec ast.ForSpec) {
+	if spec.Outer != nil {
+		p.forSpec(*spec.Outer)
+		p.writeByte(newline, 1)
+	}
+
+	p.writeString(fmt.Sprintf("for %s in ", string(spec.VarName)))
+	p.print(spec.Expr)
+
+	for _, ifSpec := range spec.Conditions {
+		p.writeByte(space, 1)
+		p.print(ifSpec)
+	}
+}
+
 func (p *printer) handleObjectField(n interface{}) {
 	var ofHide ast.ObjectFieldHide
 	var ofKind ast.ObjectFieldKind
@@ -375,6 +582,9 @@ func (p *printer) handleObjectField(n interface{}) {
 	var ofMethod *ast.Function
 	var ofSugar bool
 	var ofExpr2 ast.Node
+	var ofExpr3 ast.Node
+
+	var forSpec ast.ForSpec
 
 	switch t := n.(type) {
 	default:
@@ -383,23 +593,30 @@ func (p *printer) handleObjectField(n interface{}) {
 	case ast.ObjectField:
 		ofHide = t.Hide
 		ofKind = t.Kind
-		ofID = fieldID(t.Expr1, t.Id)
+		ofID = fieldID(ofKind, t.Expr1, t.Id)
 		ofMethod = t.Method
 		ofSugar = t.SuperSugar
 		ofExpr2 = t.Expr2
+		ofExpr3 = t.Expr3
 	case astext.ObjectField:
 		ofHide = t.Hide
 		ofKind = t.Kind
-		ofID = fieldID(t.Expr1, t.Id)
+		ofID = fieldID(ofKind, t.Expr1, t.Id)
 		ofMethod = t.Method
 		ofSugar = t.SuperSugar
 		ofExpr2 = t.Expr2
+		ofExpr3 = t.Expr3
 		p.writeComment(t.Comment)
-	}
+	case *ast.ObjectComp:
+		field := t.Fields[0]
+		ofHide = field.Hide
+		ofKind = field.Kind
+		ofID = fieldID(ofKind, field.Expr1, field.Id)
+		ofMethod = field.Method
+		ofSugar = field.SuperSugar
+		ofExpr2 = field.Expr2
 
-	if ofID == "" {
-		p.err = errors.New("id is not defined")
-		return
+		forSpec = t.Spec
 	}
 
 	var fieldType string
@@ -418,8 +635,15 @@ func (p *printer) handleObjectField(n interface{}) {
 
 	switch ofKind {
 	default:
-		p.err = errors.Errorf("unknown Kind type %#v", ofKind)
+		p.err = errors.Errorf("unknown Kind type (%T) %#v", ofKind, ofKind)
 		return
+	case ast.ObjectAssert:
+		p.writeString("assert ")
+		p.print(ofExpr2)
+		if ofExpr3 != nil {
+			p.writeString(": ")
+			p.print(ofExpr3)
+		}
 	case ast.ObjectFieldID:
 		p.writeString(ofID)
 		if ofMethod != nil {
@@ -450,8 +674,24 @@ func (p *printer) handleObjectField(n interface{}) {
 		p.writeString(" = ")
 		p.print(ofExpr2)
 	case ast.ObjectFieldStr:
-		p.writeString(fmt.Sprintf(`%s%s `, ofID, fieldType))
+		p.writeString(ofID)
+		if ofSugar {
+			p.writeByte(syntaxSugar, 1)
+		}
+		p.writeString(fieldType)
+		p.writeByte(space, 1)
 		p.print(ofExpr2)
+	case ast.ObjectFieldExpr:
+		p.writeString("{")
+		p.indentLevel++
+		p.writeByte(newline, 1)
+		p.writeString(fmt.Sprintf("[%s]: ", ofID))
+		p.print(ofExpr2)
+		p.writeByte(space, 1)
+		p.forSpec(forSpec)
+		p.indentLevel--
+		p.writeByte(newline, 1)
+		p.writeString("}")
 	}
 }
 
@@ -464,11 +704,11 @@ func isLocal(node ast.Node) bool {
 	}
 }
 
-func (p *printer) addMethodSignature(method *ast.Function) {
-	if method == nil {
+func (p *printer) addMethodSignature(fun *ast.Function) {
+	if fun == nil {
 		return
 	}
-	params := method.Parameters
+	params := fun.Parameters
 
 	p.writeString("(")
 	var args []string
@@ -501,29 +741,85 @@ func (p *printer) addMethodSignature(method *ast.Function) {
 	p.writeString(")")
 }
 
-func literalStringValue(ls *ast.LiteralString) (string, error) {
-	if ls == nil {
-		return "", errors.New("literal string is nil")
-	}
+var reDotIndex = regexp.MustCompile(`^\w[A-Za-z0-9]*$`)
 
-	return ls.Value, nil
-}
-
-func indexID(i *ast.Index) (string, error) {
+func (p *printer) indexID(i *ast.Index) {
 	if i == nil {
-		return "", errors.New("index is nil")
+		p.err = errors.New("index is nil")
+		return
 	}
 
 	if i.Index != nil {
-		ls, ok := i.Index.(*ast.LiteralString)
-		if !ok {
-			return "", errors.New("index is not a literal string")
-		}
+		switch t := i.Index.(type) {
+		default:
+			p.err = errors.Errorf("can't handle index type %T", t)
+			return
+		case *ast.LiteralNumber:
+			p.writeString(fmt.Sprintf(`[%s]`, t.OriginalString))
+		case *ast.LiteralString:
+			if t == nil {
+				p.err = errors.New("string id is nil")
+				return
+			}
 
-		return literalStringValue(ls)
+			id := t.Value
+			if reDotIndex.MatchString(id) {
+				p.writeString(fmt.Sprintf(".%s", id))
+				return
+			}
+			p.writeString(fmt.Sprintf(`["%s"]`, id))
+		case *ast.Unary:
+			p.writeString("[")
+			p.print(t)
+			p.writeString("]")
+		case *ast.Var:
+			p.writeString(fmt.Sprintf("[%s]", string(t.Id)))
+		}
 	} else if i.Id != nil {
-		return string(*i.Id), nil
+		id := string(*i.Id)
+		index := fmt.Sprintf(`["%s"]`, id)
+		if reDotIndex.MatchString(id) {
+			index = fmt.Sprintf(`.%s`, id)
+		}
+		p.writeString(index)
+
 	} else {
-		return "", errors.New("index and id can't both be blank")
+		p.err = errors.New("index and id can't both be blank")
+		return
 	}
+}
+
+func (p *printer) isObjectSingleLine(i interface{}) bool {
+	if p.inFunction {
+		return true
+	}
+
+	var loc *ast.LocationRange
+	switch t := i.(type) {
+	default:
+		return false
+	case *astext.Object:
+		if len(t.Fields) == 0 {
+			return true
+		}
+		if t.Oneline {
+			return true
+		}
+		loc = t.NodeBase.Loc()
+	case *ast.Object:
+		if len(t.Fields) == 0 {
+			return true
+		}
+		loc = t.NodeBase.Loc()
+	}
+
+	if loc == nil {
+		return false
+	}
+
+	if loc.Begin.Line == 0 {
+		return false
+	}
+
+	return loc.Begin.Line == loc.End.Line
 }
