@@ -92,11 +92,19 @@ func main() {
 		logrus.WithError(err).Fatal("generate lib")
 	}
 
+	openApiData, err := ioutil.ReadFile(swaggerPath)
+	if err != nil {
+		logrus.WithError(err).Fatal("read Open Api schema")
+	}
+
 	if err := writeFile(filepath.Join(outputDir, k8s), lib.K8s); err != nil {
 		logrus.WithError(err).Fatal("write k8s.libsonnet")
 	}
 	if err := writeFile(filepath.Join(outputDir, k), lib.Extensions); err != nil {
 		logrus.WithError(err).Fatal("write k.libsonnet")
+	}
+	if err := writeFile(filepath.Join(outputDir, "swagger.json"), openApiData); err != nil {
+		logrus.WithError(err).Fatal("write swagger.json")
 	}
 }
 
