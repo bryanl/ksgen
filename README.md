@@ -17,3 +17,4 @@ Usage of ksgen:
   -url string
     	URL to Kubernetes OpenAPI swagger JSON (default "http://localhost:8001/swagger.json")
  ```
+
