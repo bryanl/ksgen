@@ -69,7 +69,7 @@
   revision = "5ae4798d8d542a20ebcce79b657af1c693d0de8c"
 
 [[projects]]
-  digest = "1:3c2482214573e1f285edcd28d5fc224117c5fe4bb0ee984fcbfd900bda955192"
+  digest = "1:26096952c000895a6b908d301f07d68b9a39a9ba57bd447f99edf3db9f47c4a9"
   name = "github.com/ksonnet/ksonnet-lib"
   packages = [
     "ksonnet-gen/astext",
@@ -81,8 +81,8 @@
     "ksonnet-gen/printer",
   ]
   pruneopts = "UT"
-  revision = "83f20ee933bcd13fcf4ad1b49a40c92135c5569c"
-  version = "v0.1.10"
+  revision = "d03da231d6c8bd74437b74a1e9e8b966f13dffa2"
+  version = "v0.1.12"
 
 [[projects]]
   branch = "master"
